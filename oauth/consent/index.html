@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob: https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.97.0/dist/umd/supabase.js; style-src 'unsafe-inline'; connect-src https://fashfbwdshihavbppzpe.supabase.co; base-uri 'none'; form-action 'none'">
+  <title>MCN Bridge · Zugriff bestätigen</title>
+  <style>
+    :root { color-scheme: light; font: 17px/1.5 system-ui, sans-serif; color: #172b38; background: #f1f5f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 3rem 1rem; }
+    main { max-width: 40rem; margin: auto; padding: 2rem; background: white; border: 1px solid #ccd7de; border-radius: .75rem; }
+    h1 { margin-top: 0; font-size: 1.7rem; line-height: 1.2; }
+    h2 { font-size: 1.2rem; }
+    label, input { display: block; width: 100%; }
+    input { margin: .35rem 0 1rem; padding: .7rem; font: inherit; border: 1px solid #69808e; border-radius: .25rem; }
+    button { padding: .7rem 1rem; font: inherit; cursor: pointer; border: 1px solid #194c65; border-radius: .25rem; background: #194c65; color: white; }
+    button:disabled { opacity: .5; cursor: default; }
+    button:focus-visible, input:focus-visible { outline: 3px solid #d18c00; outline-offset: 3px; }
+    #deny { background: white; color: #194c65; }
+    .actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+    dt { font-weight: 650; margin-top: .8rem; }
+    dd { margin: .2rem 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    #status { overflow-wrap: anywhere; }
+    [hidden] { display: none !important; }
+    @media (max-width: 480px) { body { padding: 1rem .5rem; } main { padding: 1.25rem; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>MCN Bridge · Zugriff bestätigen</h1>
+    <p id="status" role="status" aria-live="polite">Anfrage wird geprüft …</p>
+    <noscript>Für Anmeldung und Zustimmung muss JavaScript aktiviert sein.</noscript>
+    <form id="login" method="post" autocomplete="off" hidden>
+      <h2>Anmelden</h2>
+      <label for="email">E-Mail</label>
+      <input id="email" type="email" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+      <label for="password">Passwort</label>
+      <input id="password" type="password" autocomplete="off" required>
+      <button id="sign-in" type="submit" disabled>Anmelden</button>
+    </form>
+    <section id="consent" aria-labelledby="consent-heading" hidden>
+      <h2 id="consent-heading">Angefragter Zugriff</h2>
+      <dl>
+        <dt>Client</dt><dd id="client-name"></dd>
+        <dt>Redirect-URI</dt><dd id="redirect-uri"></dd>
+        <dt>Scope</dt><dd id="scope"></dd>
+      </dl>
+      <p>Prüfen Sie die Angaben und entscheiden Sie ausdrücklich.</p>
+      <div class="actions">
+        <button id="approve" type="button" disabled>Zustimmen</button>
+        <button id="deny" type="button" disabled>Ablehnen</button>
+      </div>
+    </section>
+  </main>
+  <!-- Eigenständiges ES-Modul als Datenblock: ein HTML-Artefakt, keine Logik-Kopie. -->
+  <script id="consent-core" type="text/plain">
+export const SUPABASE_URL = 'https://fashfbwdshihavbppzpe.supabase.co';
+export const TEST_CLIENT_ID = '34388f6c-a9d8-4634-b1e3-0ce19e000ed5';
+export const EDGE_CALLBACK = SUPABASE_URL + '/functions/v1/mcn-bridge/oauth/callback';
+export const SDK_URL = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.97.0/dist/umd/supabase.js';
+export const AUTH_OPTIONS = Object.freeze({ persistSession: false, autoRefreshToken: false, detectSessionInUrl: false });
+const messages = Object.freeze({
+  authorization: 'Die Anfrage enthält keine eindeutige, nicht leere authorization_id.',
+  client: 'Dieser Client ist für diese Testseite nicht vorgesehen. Vorgang abgebrochen.',
+  callback: 'Die Redirect-URI entspricht nicht dem vorgesehenen Callback. Vorgang abgebrochen.',
+  redirect: 'Das Weiterleitungsziel ist nicht zulässig. Es erfolgt keine Weiterleitung.',
+  details: 'Die Autorisierungsdetails sind unvollständig oder widersprüchlich.',
+  state: 'Diese Aktion ist jetzt nicht zulässig. Bitte den Vorgang neu starten.',
+  config: 'Der öffentliche Publishable Key fehlt oder ist ungültig. Anmeldung ist noch nicht eingerichtet.',
+  sdk: 'Der Supabase-Browserclient konnte nicht geladen werden.',
+});
+class ConsentError extends Error {
+  constructor(code) { super(messages[code]); this.code = code; }
+}
+export function displayError(error) {
+  // Keine fremden message-, code-, details- oder stack-Felder in der Anzeige.
+  return error instanceof ConsentError ? messages[error.code] : 'Supabase-Anfrage fehlgeschlagen. Bitte den Vorgang neu starten.';
+}
+export function readAuthorizationId(search) {
+  const ids = new URLSearchParams(search).getAll('authorization_id');
+  if (ids.length !== 1 || !ids[0].trim()) throw new ConsentError('authorization');
+  return ids[0];
+}
+export function requirePublishableKey(key) {
+  if (typeof key !== 'string' || !/^sb_publishable_[A-Za-z0-9_-]{8,}$/.test(key)) throw new ConsentError('config');
+  return key;
+}
+export function sdkLoadError() { return new ConsentError('sdk'); }
+export function checkedRedirect(value) {
+  if (typeof value !== 'string' || !value || value !== value.trim()) throw new ConsentError('redirect');
+  let target;
+  try { target = new URL(value); } catch { throw new ConsentError('redirect'); }
+  const callback = new URL(EDGE_CALLBACK);
+  if (target.origin !== callback.origin || target.pathname !== callback.pathname ||
+      target.username || target.password || target.hash) throw new ConsentError('redirect');
+  return target.href;
+}
+export function inspectAuthorization(details, authorizationId) {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) throw new ConsentError('details');
+  if (!Object.hasOwn(details, 'authorization_id')) {
+    // Nur die reine Redirect-Form; gemischte/unvollständige Details umgehen keine Prüfung.
+    if (Object.keys(details).length !== 1 || !Object.hasOwn(details, 'redirect_url')) throw new ConsentError('details');
+    return Object.freeze({ kind: 'redirect', redirectUrl: checkedRedirect(details.redirect_url), alreadyConsented: true });
+  }
+  if (details.client?.id !== TEST_CLIENT_ID) throw new ConsentError('client');
+  if (details.redirect_uri !== EDGE_CALLBACK) throw new ConsentError('callback');
+  if (details.authorization_id !== authorizationId || Object.hasOwn(details, 'redirect_url') ||
+      typeof details.client?.name !== 'string' || !details.client.name.trim() ||
+      typeof details.scope !== 'string' || !details.scope.trim()) throw new ConsentError('details');
+  return Object.freeze({ kind: 'consent', name: details.client.name, redirectUri: details.redirect_uri, scope: details.scope });
+}
+function unwrap(response) {
+  if (response?.error) throw response.error;
+  if (!response || !response.data) throw new ConsentError('details');
+  return response.data;
+}
+export function createConsentFlow({ search, createClient }) {
+  // Vor Factory, SDK-Initialisierung, Session-Abfrage und jedem anderen Supabase-Aufruf.
+  const authorizationId = readAuthorizationId(search);
+  let phase = 'new';
+  let client;
+  async function loadDetails() {
+    const data = unwrap(await client.auth.oauth.getAuthorizationDetails(authorizationId));
+    const result = inspectAuthorization(data, authorizationId);
+    phase = result.kind === 'consent' ? 'ready' : 'done';
+    return result;
+  }
+  return Object.freeze({
+    async start() {
+      if (phase !== 'new') throw new ConsentError('state');
+      phase = 'loading';
+      try {
+        client = await createClient();
+        const data = unwrap(await client.auth.getSession());
+        if (data.session) return await loadDetails();
+        phase = 'login';
+        return Object.freeze({ kind: 'login' });
+      } catch (error) { phase = 'failed'; throw error; }
+    },
+    async login(email, password) {
+      if (phase !== 'login') throw new ConsentError('state');
+      phase = 'loading';
+      try {
+        const data = unwrap(await client.auth.signInWithPassword({ email, password }));
+        password = '';
+        if (!data.session) throw new ConsentError('details');
+        return await loadDetails();
+      } catch (error) { phase = 'failed'; throw error; }
+      finally { password = ''; }
+    },
+    async decide(action) {
+      if (phase !== 'ready' || (action !== 'approve' && action !== 'deny')) throw new ConsentError('state');
+      phase = 'deciding'; // Vor await: auch Doppelklicks und konkurrierende Entscheidungen sperren.
+      try {
+        const options = { skipBrowserRedirect: true };
+        const response = action === 'approve'
+          ? await client.auth.oauth.approveAuthorization(authorizationId, options)
+          : await client.auth.oauth.denyAuthorization(authorizationId, options);
+        const data = unwrap(response);
+        const redirectUrl = checkedRedirect(data.redirect_url);
+        phase = 'done';
+        return Object.freeze({ kind: 'redirect', redirectUrl, alreadyConsented: false });
+      } catch (error) { phase = 'failed'; throw error; }
+    },
+  });
+}
+  </script>
+  <script type="module" id="consent-page">
+if (window.top !== window.self) {
+  document.documentElement.innerHTML = '<body>Diese Seite darf nicht eingebettet werden.</body>';
+  throw new Error('E_FRAMED');
+}
+const byId = (id) => document.getElementById(id);
+const status = byId('status');
+const login = byId('login');
+const consent = byId('consent');
+const email = byId('email');
+const password = byId('password');
+const signIn = byId('sign-in');
+const approve = byId('approve');
+const deny = byId('deny');
+let core;
+let flow;
+function hideForms() {
+  login.hidden = true;
+  consent.hidden = true;
+  signIn.disabled = approve.disabled = deny.disabled = true;
+  for (const id of ['client-name', 'redirect-uri', 'scope']) byId(id).textContent = '';
+}
+function fail(error) {
+  hideForms();
+  password.value = '';
+  status.setAttribute('role', 'alert');
+  status.textContent = core ? core.displayError(error) : 'Die Consent-Seite konnte nicht gestartet werden.';
+}
+function render(result) {
+  hideForms();
+  if (result.kind === 'login') {
+    status.textContent = 'Bitte melden Sie sich an, um die Anfrage zu prüfen.';
+    login.hidden = false;
+    signIn.disabled = false;
+    email.focus();
+  } else if (result.kind === 'consent') {
+    byId('client-name').textContent = result.name;
+    byId('redirect-uri').textContent = result.redirectUri;
+    byId('scope').textContent = result.scope;
+    status.textContent = 'Es wurde noch keine Zustimmung erteilt.';
+    consent.hidden = false;
+    approve.disabled = deny.disabled = false;
+  } else if (result.kind === 'redirect') {
+    const target = core.checkedRedirect(result.redirectUrl);
+    status.textContent = result.alreadyConsented
+      ? 'Sie haben bereits zugestimmt. Sie werden zum Callback weitergeleitet …'
+      : 'Ihre Entscheidung wurde übermittelt. Sie werden zum Callback weitergeleitet …';
+    // Nur die bereits geprüfte Weiterleitung verzögern, niemals eine Zustimmung auslösen.
+    window.setTimeout(() => window.location.assign(target), 700);
+  }
+}
+login.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!flow || login.hidden || signIn.disabled) return;
+  signIn.disabled = true;
+  status.textContent = 'Anmeldung wird geprüft …';
+  const attempt = flow.login(email.value, password.value);
+  password.value = '';
+  try { render(await attempt); } catch (error) { fail(error); }
+});
+for (const [button, action] of [[approve, 'approve'], [deny, 'deny']]) {
+  button.addEventListener('click', async () => {
+    if (!flow || consent.hidden || button.disabled) return;
+    approve.disabled = deny.disabled = true;
+    status.textContent = 'Entscheidung wird übermittelt …';
+    try { render(await flow.decide(action)); } catch (error) { fail(error); }
+  });
+}
+try {
+  const moduleUrl = URL.createObjectURL(new Blob([byId('consent-core').textContent], { type: 'text/javascript' }));
+  try { core = await import(moduleUrl); } finally { URL.revokeObjectURL(moduleUrl); }
+  flow = core.createConsentFlow({
+    search: window.location.search,
+    createClient: async () => {
+      // Öffentlicher Publishable Key. Kein Geheimnis: Er steht ohnehin in jedem
+      // Browser, der den Flow durchläuft, und wirkt nur zusammen mit RLS.
+      const publishableKey = core.requirePublishableKey('sb_publishable_VihRxyPvohcSKR9oCblYvA_NyPMT7gY');
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = core.SDK_URL;
+        script.crossOrigin = 'anonymous';
+        script.referrerPolicy = 'no-referrer';
+        script.onload = resolve;
+        script.onerror = () => reject(core.sdkLoadError());
+        document.head.append(script);
+      });
+      if (typeof window.supabase?.createClient !== 'function') throw core.sdkLoadError();
+      return window.supabase.createClient(core.SUPABASE_URL, publishableKey, { auth: core.AUTH_OPTIONS });
+    },
+  });
+  render(await flow.start());
+} catch (error) { fail(error); }
+  </script>
+</body>
+</html>
