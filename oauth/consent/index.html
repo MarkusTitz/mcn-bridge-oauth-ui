@@ -59,6 +59,10 @@
 export const SUPABASE_URL = 'https://fashfbwdshihavbppzpe.supabase.co';
 export const TEST_CLIENT_ID = '34388f6c-a9d8-4634-b1e3-0ce19e000ed5';
 export const EDGE_CALLBACK = SUPABASE_URL + '/functions/v1/mcn-bridge/oauth/callback';
+export const CLIENT_CALLBACKS = Object.freeze({
+  [TEST_CLIENT_ID]: EDGE_CALLBACK,
+  '01097c5d-1b45-42ab-970b-fc8a08352014': 'https://chatgpt.com/connector/oauth/eO8BMO7U5f_J',
+});
 export const SDK_URL = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.97.0/dist/umd/supabase.js';
 export const AUTH_OPTIONS = Object.freeze({ persistSession: false, autoRefreshToken: false, detectSessionInUrl: false });
 const messages = Object.freeze({
@@ -92,8 +96,11 @@ export function checkedRedirect(value) {
   if (typeof value !== 'string' || !value || value !== value.trim()) throw new ConsentError('redirect');
   let target;
   try { target = new URL(value); } catch { throw new ConsentError('redirect'); }
-  const callback = new URL(EDGE_CALLBACK);
-  if (target.origin !== callback.origin || target.pathname !== callback.pathname ||
+  const allowed = Object.values(CLIENT_CALLBACKS).some((value) => {
+    const callback = new URL(value);
+    return target.origin === callback.origin && target.pathname === callback.pathname;
+  });
+  if (!allowed ||
       target.username || target.password || target.hash) throw new ConsentError('redirect');
   return target.href;
 }
@@ -104,8 +111,8 @@ export function inspectAuthorization(details, authorizationId) {
     if (Object.keys(details).length !== 1 || !Object.hasOwn(details, 'redirect_url')) throw new ConsentError('details');
     return Object.freeze({ kind: 'redirect', redirectUrl: checkedRedirect(details.redirect_url), alreadyConsented: true });
   }
-  if (details.client?.id !== TEST_CLIENT_ID) throw new ConsentError('client');
-  if (details.redirect_uri !== EDGE_CALLBACK) throw new ConsentError('callback');
+  if (!Object.hasOwn(CLIENT_CALLBACKS, details.client?.id)) throw new ConsentError('client');
+  if (details.redirect_uri !== CLIENT_CALLBACKS[details.client.id]) throw new ConsentError('callback');
   if (details.authorization_id !== authorizationId || Object.hasOwn(details, 'redirect_url') ||
       typeof details.client?.name !== 'string' || !details.client.name.trim() ||
       typeof details.scope !== 'string' || !details.scope.trim()) throw new ConsentError('details');
